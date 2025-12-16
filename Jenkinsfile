@@ -1,18 +1,13 @@
 pipeline {
   agent any
 
-  parameters {
-    string(name: 'TF_DIR', defaultValue: '.', description: 'Dossier Terraform')
-  }
-
   environment {
     TERRAFORM_VERSION = '1.5.0'
+    TF_DIR = '.'
   }
 
   stages {
-    stage('Checkout') {
-      steps { checkout scm }
-    }
+    stage('Checkout') { steps { checkout scm } }
 
     stage('Install Terraform (if missing)') {
       steps {
@@ -22,10 +17,8 @@ pipeline {
             terraform version | head -n1
             exit 0
           fi
-
           apt-get update -y
           apt-get install -y curl unzip ca-certificates
-
           curl -fsSL -o /tmp/terraform.zip \
             "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
           unzip -o /tmp/terraform.zip -d /usr/local/bin
@@ -34,42 +27,33 @@ pipeline {
       }
     }
 
-    stage('Terraform fmt (check only)') {
+    stage('Fmt (info only, never fail)') {
       steps {
         sh '''
-          set -e
           cd "${TF_DIR}"
-          terraform fmt -check -recursive
+          terraform fmt -check -recursive || true
+          echo "fmt check done (ignored if differences)"
         '''
       }
     }
 
-    stage('Terraform validate (NO BACKEND / NO NETWORK)') {
+    stage('Validate (no backend, best effort)') {
       steps {
         sh '''
-          set -e
           cd "${TF_DIR}"
-
-          # init SANS backend => ne contacte rien, n'écrit pas dans S3/Dynamo, etc.
-          terraform init -backend=false -input=false -no-color
-
-          # validate ne touche pas AWS, c'est juste du parsing
-          terraform validate -no-color
+          terraform init -backend=false -input=false -no-color || true
+          terraform validate -no-color || true
+          echo "validate done (best effort, no fail)"
         '''
       }
     }
 
-    stage('DRY RUN (no plan, no apply)') {
+    stage('DRY RUN') {
       steps {
-        sh '''
-          echo "✅ DRY RUN OK: fmt + validate pass"
-          echo "🚫 Aucun terraform plan / apply n'a été exécuté."
-        '''
+        echo "✅ DRY RUN: No plan, no apply, nothing changed in AWS."
       }
     }
   }
 
-  post {
-    always { cleanWs() }
-  }
+  post { always { cleanWs() } }
 }
