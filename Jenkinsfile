@@ -1,131 +1,75 @@
 pipeline {
-    agent any
-    
-    environment {
-        AWS_REGION = 'eu-west-3'
-        TERRAFORM_VERSION = '1.5.0'
-        TERRAFORM_WORKING_DIR = '.'
-    }
-    
-    stages {
-        stage('Checkout') {
-            steps {
-                script {
-                    echo "Checking out Terraform code from ${env.GIT_URL}"
-                    checkout scm
-                }
-            }
-        }
-        
-        stage('Terraform Init') {
-            steps {
-                script {
-                    echo "Initializing Terraform..."
-                    withCredentials([
-                        string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
-                        string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
-                    ]) {
-                        sh """
-                            export AWS_ACCESS_KEY_ID=\${AWS_ACCESS_KEY_ID}
-                            export AWS_SECRET_ACCESS_KEY=\${AWS_SECRET_ACCESS_KEY}
-                            export AWS_DEFAULT_REGION=${AWS_REGION}
-                            
-                            cd ${TERRAFORM_WORKING_DIR}
-                            terraform init
-                        """
-                    }
-                }
-            }
-        }
-        
-        stage('Terraform Validate') {
-            steps {
-                script {
-                    echo "Validating Terraform configuration..."
-                    sh """
-                        cd ${TERRAFORM_WORKING_DIR}
-                        terraform validate
-                    """
-                }
-            }
-        }
-        
-        stage('Terraform Plan') {
-            steps {
-                script {
-                    echo "Running Terraform plan..."
-                    withCredentials([
-                        string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
-                        string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
-                    ]) {
-                        sh """
-                            export AWS_ACCESS_KEY_ID=\${AWS_ACCESS_KEY_ID}
-                            export AWS_SECRET_ACCESS_KEY=\${AWS_SECRET_ACCESS_KEY}
-                            export AWS_DEFAULT_REGION=${AWS_REGION}
-                            
-                            cd ${TERRAFORM_WORKING_DIR}
-                            terraform plan -out=tfplan
-                        """
-                    }
-                }
-            }
-        }
-        
-        stage('Terraform Apply') {
-            steps {
-                script {
-                    echo "Applying Terraform configuration..."
-                    echo "⚠️ This will deploy/update the complete infrastructure!"
-                    withCredentials([
-                        string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
-                        string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
-                    ]) {
-                        sh """
-                            export AWS_ACCESS_KEY_ID=\${AWS_ACCESS_KEY_ID}
-                            export AWS_SECRET_ACCESS_KEY=\${AWS_SECRET_ACCESS_KEY}
-                            export AWS_DEFAULT_REGION=${AWS_REGION}
-                            
-                            cd ${TERRAFORM_WORKING_DIR}
-                            terraform apply -auto-approve tfplan
-                        """
-                    }
-                }
-            }
-        }
-        
-        stage('Output Infrastructure Info') {
-            steps {
-                script {
-                    echo "Retrieving infrastructure outputs..."
-                    withCredentials([
-                        string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
-                        string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
-                    ]) {
-                        sh """
-                            export AWS_ACCESS_KEY_ID=\${AWS_ACCESS_KEY_ID}
-                            export AWS_SECRET_ACCESS_KEY=\${AWS_SECRET_ACCESS_KEY}
-                            export AWS_DEFAULT_REGION=${AWS_REGION}
-                            
-                            cd ${TERRAFORM_WORKING_DIR}
-                            terraform output
-                        """
-                    }
-                }
-            }
-        }
-    }
-    
-    post {
-        success {
-            echo "✅ Terraform pipeline completed successfully!"
-            echo "Infrastructure deployed/updated in ${AWS_REGION}"
-        }
-        failure {
-            echo "❌ Terraform pipeline failed!"
-        }
-        always {
-            cleanWs()
-        }
-    }
-}
+  agent any
 
+  parameters {
+    string(name: 'TF_DIR', defaultValue: '.', description: 'Dossier Terraform')
+  }
+
+  environment {
+    TERRAFORM_VERSION = '1.5.0'
+  }
+
+  stages {
+    stage('Checkout') {
+      steps { checkout scm }
+    }
+
+    stage('Install Terraform (if missing)') {
+      steps {
+        sh '''
+          set -e
+          if command -v terraform >/dev/null 2>&1; then
+            terraform version | head -n1
+            exit 0
+          fi
+
+          apt-get update -y
+          apt-get install -y curl unzip ca-certificates
+
+          curl -fsSL -o /tmp/terraform.zip \
+            "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+          unzip -o /tmp/terraform.zip -d /usr/local/bin
+          terraform version | head -n1
+        '''
+      }
+    }
+
+    stage('Terraform fmt (check only)') {
+      steps {
+        sh '''
+          set -e
+          cd "${TF_DIR}"
+          terraform fmt -check -recursive
+        '''
+      }
+    }
+
+    stage('Terraform validate (NO BACKEND / NO NETWORK)') {
+      steps {
+        sh '''
+          set -e
+          cd "${TF_DIR}"
+
+          # init SANS backend => ne contacte rien, n'écrit pas dans S3/Dynamo, etc.
+          terraform init -backend=false -input=false -no-color
+
+          # validate ne touche pas AWS, c'est juste du parsing
+          terraform validate -no-color
+        '''
+      }
+    }
+
+    stage('DRY RUN (no plan, no apply)') {
+      steps {
+        sh '''
+          echo "✅ DRY RUN OK: fmt + validate pass"
+          echo "🚫 Aucun terraform plan / apply n'a été exécuté."
+        '''
+      }
+    }
+  }
+
+  post {
+    always { cleanWs() }
+  }
+}
