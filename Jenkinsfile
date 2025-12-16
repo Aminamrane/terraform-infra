@@ -115,7 +115,7 @@ pipeline {
       }
     }
 
-    stage('Optional Failure (FAKE)') {
+    stage('Optional Failure') {
       when { expression { return params.SIMULATE_FAILURE } }
       steps {
         error("FAKE failure triggered by parameter SIMULATE_FAILURE=true")
